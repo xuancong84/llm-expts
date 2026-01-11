@@ -28,4 +28,5 @@ docker run --rm -it \
   --dtype bfloat16 \
   --tensor-parallel-size 1 \
   --kv-cache-dtype fp8_e4m3 \
-  --enable-sleep-mode "${@:3}"
+  --enable-sleep-mode "${@:3}" \
+  --trust-remote-code

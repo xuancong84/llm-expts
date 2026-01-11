@@ -1,10 +1,12 @@
 import os, sys
 import torch
-from unsloth import FastLanguageModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer, BitsAndBytesConfig, Mxfp4Config
 
-model_id = os.getenv('MODEL_ID', '/home/LLM_models/unsloth/gpt-oss-120b-unsloth-bnb-4bit')
-# model_id = os.getenv('MODEL_ID', '/home/LLM_models/gpt-oss-120b')
+model_id = sys.argv[1] if len(sys.argv) > 1 else os.getenv('MODEL_ID', 
+# '/home/LLM_models/unsloth/gpt-oss-20b-unsloth-bnb-4bit')
+'/home/LLM_models/gpt-oss-20b')
+
+# model_id = '/home/LLM_models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16'
 
 max_new_tokens = int(os.getenv('MAX_SEQ_LEN', '65536'))
 reasoning_effort = os.getenv('REASONING', 'high')
@@ -13,6 +15,7 @@ reasoning_effort = os.getenv('REASONING', 'high')
 messages = [{"role": "user", "content": "Solve x^5 + 3x^4 - 10 = 3."}]
 
 if 'unsloth' in model_id:
+	from unsloth import FastLanguageModel
 	model, tokenizer = FastLanguageModel.from_pretrained(
 		model_name = model_id,
 		dtype = None, # None for auto detection
@@ -41,15 +44,18 @@ else:
 		model_id,
 		device_map="cuda",
 		torch_dtype="auto",
+		trust_remote_code=True,
 	)
 
 	formatted_chat = tokenizer.apply_chat_template(
 		messages,
+		add_generation_prompt=True,
 		tokenize=False)
 	print(formatted_chat)
 
 	input_ids = tokenizer.apply_chat_template(
 		messages,
+		add_generation_prompt=True,
 		return_tensors="pt",
 		reasoning_effort = reasoning_effort
 	).to(model.device)
