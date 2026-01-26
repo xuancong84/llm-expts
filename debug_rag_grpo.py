@@ -198,9 +198,9 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="GPRO RAG Training")
-    parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-20b", help="Model name or path")
+    parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-120b", help="Model name or path")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
-    parser.add_argument("--max_seq_len", type=int, default=8192, help="Max sequence length")
+    parser.add_argument("--max_seq_len", type=int, default=2048, help="Max sequence length")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
     parser.add_argument("--epochs", type=int, default=1, help="Num epochs")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Grad accumulation steps")

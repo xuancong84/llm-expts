@@ -4,13 +4,14 @@ import json
 import torch
 from dataclasses import dataclass, field
 from typing import Optional, List
-from unsloth import FastLanguageModel
-from transformers import TrainingArguments, AutoTokenizer
+from transformers import TrainingArguments, AutoTokenizer, AutoModelForCausalLM
+from peft import get_peft_model, LoraConfig, TaskType
 from trl import GRPOTrainer, GRPOConfig
 from datasets import Dataset
 import pypdf
 import re
 
+	
 # ==========================================
 # Data Loading
 # ==========================================
@@ -155,7 +156,7 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 			if not quotes:
 				# If no quotes found but structure exists, neutral or small penalty? 
 				# Let's say 0.0 if structure requires quotes.
-				rewards.append(0.0)
+				rewards.append(0.0) 
 				continue
 			
 			valid_quotes = 0
@@ -181,7 +182,7 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 def main():
 	import argparse
 	parser = argparse.ArgumentParser(description="GPRO RAG Training")
-	parser.add_argument("--model_name", type=str, default="/home/LLM_models/unsloth/gpt-oss-120b-unsloth-bnb-4bit", help="Model name or path")
+	parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-20b", help="Model name or path")
 	parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
 	parser.add_argument("--max_seq_len", type=int, default=2048, help="Max sequence length")
 	parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
@@ -196,25 +197,24 @@ def main():
 	print(f"Loading model: {args.model_name}")
 
 	# Load Model
-	# unsloth handles loading. For 120B, ensure 4bit is used.
-	model, tokenizer = FastLanguageModel.from_pretrained(
-		model_name = args.model_name,
-		max_seq_length = args.max_seq_len,
-		load_in_4bit = True,
-		fast_inference = False, # Disable vLLM interaction to avoid mxfp4 vs bitsandbytes conflict
-		gpu_memory_utilization = 0.85, 
+	tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
+	model = AutoModelForCausalLM.from_pretrained(
+		args.model_name,
+		device_map="cuda",
+		torch_dtype="auto",
+		trust_remote_code=True,
+	)
+
+	peft_config = LoraConfig(
+		task_type=TaskType.CAUSAL_LM,
+		inference_mode=False,
+		r=8,
+		lora_alpha=32,
+		lora_dropout=0.1,
+		target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 	)
 	
-	model = FastLanguageModel.get_peft_model(
-		model,
-		r = 16,
-		target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-						"gate_proj", "up_proj", "down_proj",],
-		lora_alpha = 16,
-		lora_dropout = 0,
-		bias = "none",
-		use_gradient_checkpointing = "unsloth",
-	)
+	model = get_peft_model(model, peft_config)
 
 	# Load Dataset
 	dataset = load_rag_dataset("data")
@@ -239,6 +239,7 @@ def main():
 		save_strategy = "steps",
 		save_steps = 100,
 		bf16 = True, # Use BF16 for GH200
+		torch_compile=False,
 	)
 	
 	trainer = GRPOTrainer(
