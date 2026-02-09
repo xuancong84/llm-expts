@@ -1,17 +1,21 @@
-import os
-import glob
-import json
+import os, sys, re, glob, json
+
+# Change CUDA allocator to RMM
+import rmm
+from rmm.allocators.torch import rmm_torch_allocator
 import torch
+rmm.reinitialize(pool_allocator=True, managed_memory=True)
+torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
+
 from dataclasses import dataclass, field
 from typing import Optional, List
-from transformers import TrainingArguments, AutoTokenizer, AutoModelForCausalLM
+from transformers import TrainingArguments, AutoTokenizer, AutoModelForCausalLM, Mxfp4Config
 from peft import get_peft_model, LoraConfig, TaskType
 from trl import GRPOTrainer, GRPOConfig
 from datasets import Dataset
 import pypdf
-import re
 
-	
+
 # ==========================================
 # Data Loading
 # ==========================================
@@ -182,9 +186,9 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 def main():
 	import argparse
 	parser = argparse.ArgumentParser(description="GPRO RAG Training")
-	parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-20b", help="Model name or path")
+	parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-120b", help="Model name or path")
 	parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
-	parser.add_argument("--max_seq_len", type=int, default=2048, help="Max sequence length")
+	parser.add_argument("--max_seq_len", type=int, default=65536, help="Max sequence length")
 	parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
 	parser.add_argument("--epochs", type=int, default=1, help="Num epochs")
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Grad accumulation steps")
@@ -193,15 +197,19 @@ def main():
 	# Check GPU
 	gpu_count = torch.cuda.device_count()
 	print(f"Detected {gpu_count} GPUs.")
-	
 	print(f"Loading model: {args.model_name}")
+
+	# Disable warmup for custom allocator to run
+	import transformers.modeling_utils
+	transformers.modeling_utils.caching_allocator_warmup = lambda *args, **kwargs: None
 
 	# Load Model
 	tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
 	model = AutoModelForCausalLM.from_pretrained(
 		args.model_name,
 		device_map="cuda",
-		torch_dtype="auto",
+		dtype="auto",
+		quantization_config = Mxfp4Config(dequantize=True),
 		trust_remote_code=True,
 	)
 
@@ -240,6 +248,7 @@ def main():
 		save_steps = 100,
 		bf16 = True, # Use BF16 for GH200
 		torch_compile=False,
+		# deepspeed="ds_config.json",
 	)
 	
 	trainer = GRPOTrainer(
