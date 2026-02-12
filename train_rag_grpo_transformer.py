@@ -23,18 +23,21 @@ SYSTEM_PROMPT = """You are a medical assistant. You will be provided with a pati
 Your task is to:
 1. Identify relevant quotes from the guideline that apply to the case.
 2. Formulate a recommended action based on the guideline and the case.
-3. Output your reasoning, relevant quotes, and the final recommendation in the following XML format:
+3. Output your relevant quotes (each with the corresponding explanation), your reasoning, and the final recommendation in the following XML format:
 
 <analysis>
-<reasoning>
-Explain why the guideline applies to this patient.
-</reasoning>
 <relevant_quotes>
-<quote page="1">Exact text from document</quote>
+<quote page="3">
+<text>Exact text from the document</text>
+<explanation>Explain why the extracted text from the document applies to this patient.</explanation>
+</quote>
 </relevant_quotes>
+<reasoning>
+Explain how the extracted text from the document are combined to form the final recommendation.
+</reasoning>
 </analysis>
 <recommended_action>
-The specific action to take.
+The specific action to take based on the extracted text from the document.
 </recommended_action>
 """
 
@@ -115,7 +118,8 @@ def _get_text(completion):
 
 def xml_format_reward(prompts, completions, **kwargs):
 	rewards = []
-	xml_regex = r"<analysis>.*<reasoning>.*</reasoning>.*<relevant_quotes>.*</relevant_quotes>.*</analysis>.*<recommended_action>.*</recommended_action>"
+	xml_regex = '.*'.join(re.findall(r'<[^ >]*>', SYSTEM_PROMPT))
+	# r"<analysis>.*<reasoning>.*</reasoning>.*<relevant_quotes>.*</relevant_quotes>.*</analysis>.*<recommended_action>.*</recommended_action>"
 	for completion in completions:
 		text = _get_text(completion)
 		# Simple regex check for structure (allowing newlines with DOTALL)
@@ -186,10 +190,11 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 def main():
 	import argparse
 	parser = argparse.ArgumentParser(description="GPRO RAG Training")
-	parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-120b", help="Model name or path")
+	parser.add_argument("--model_name", type=str, default="/home/LLM_models/gpt-oss-20b", help="Model name or path")
 	parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
 	parser.add_argument("--max_seq_len", type=int, default=65536, help="Max sequence length")
 	parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
+	parser.add_argument("--data_dir", type=str, default="data", help="dataset directory")
 	parser.add_argument("--epochs", type=int, default=1, help="Num epochs")
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Grad accumulation steps")
 	args = parser.parse_args()
@@ -225,7 +230,7 @@ def main():
 	model = get_peft_model(model, peft_config)
 
 	# Load Dataset
-	dataset = load_rag_dataset("data")
+	dataset = load_rag_dataset(args.data_dir)
 	print(f"Loaded {len(dataset)} items.")
 	if len(dataset) == 0:
 		print("No data found! Exiting.")

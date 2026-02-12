@@ -15,8 +15,13 @@ fi
 
 model_base="`basename $1`"
 
+GPU_OPT=all
+if [ "$CUDA_VISIBLE_DEVICES" ]; then
+	GPU_OPT="device=$CUDA_VISIBLE_DEVICES"
+fi
+
 docker run --rm -it \
-  --gpus all --ipc=host -p ${2:-9000}:8000 \
+  --gpus "$GPU_OPT" --ipc=host -p ${2:-9000}:8000 \
   -e VLLM_SERVER_DEV_MODE=1 \
   -e TIKTOKEN_ENCODINGS_BASE=/encodings \
   -e TIKTOKEN_RS_CACHE_DIR=/tiktoken_cache \
