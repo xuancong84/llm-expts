@@ -21,12 +21,8 @@ That way, we never lose partial generations due to client-side
 timeouts raising exceptions.
 """
 
-import argparse
-import asyncio
-import json
-import time
+import argparse, asyncio, json, time, requests
 from typing import Any, Dict, List, Optional
-
 import aiohttp
 from tqdm.asyncio import tqdm_asyncio
 
@@ -73,11 +69,27 @@ def estimate_tokens(text: str, model: Optional[str] = None) -> int:
 def vllm_url(host: str, port: int) -> str:
 	return f"http://{host}:{port}/v1/completions"
 
-
 def ollama_url(host: str, port: int) -> str:
 	# Ollama uses `/api/generate` for plain completions.
 	return f"http://{host}:{port}/api/generate"
 
+def vllm_list_models(host: str, port: int) -> list:
+	try:
+		data = requests.get(f"http://{host}:{port}/v1/models").json()
+		return [m['id'] for m in data['data']]
+	except:
+		if 'data' not in locals():
+			data = ''
+		raise Exception(f"Unable to list model from http://{host}:{port}/v1/models\n{data}")
+
+def ollama_list_models(host: str, port: int) -> list:
+	try:
+		data = requests.get(f"http://{host}:{port}/api/tags").json()
+		return [m['model'] for m in data['models']]
+	except:
+		if 'data' not in locals():
+			data = ''
+		raise Exception(f"Unable to list model from http://{host}:{port}/api/tags\n{data}")
 
 def vllm_payload(
 	prompt: str,
@@ -427,20 +439,24 @@ async def run_benchmark(
 ) -> Dict[str, Any]:
 	# Resolve URL and payload according to engine
 	if engine == "vllm":
+		model = model or '/gpt-oss-120b'
+		models = vllm_list_models(host, port)
 		url = vllm_url(host, port)
 		payload = vllm_payload(
 			prompt,
 			max_tokens,
-			model,
+			model if model in models else models[0],
 			stream=stream,
 			max_time=max_time,
 		)
 	elif engine == "ollama":
+		model = model or 'gpt-oss:120b'
+		models = ollama_list_models(host, port)
 		url = ollama_url(host, port)
 		payload = ollama_payload(
 			prompt,
 			max_tokens,
-			model,
+			model if model in models else models[0],
 			stream=stream,
 			max_time=max_time,
 		)
@@ -560,7 +576,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--engine",
 		choices=["vllm", "ollama"],
-		default="vllm",
+		default="ollama",
 		help="Backend to test (default: vllm). Use 'ollama' for Ollama on port 11434.",
 	)
 	parser.add_argument("--host", default="localhost", help="Server hostname")
@@ -571,18 +587,18 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"--model",
-		default="vllm",  # for Ollama you can pass e.g. "llama2"
+		default="",  # for Ollama you can pass e.g. "llama2"
 		help="Model name as registered in the backend",
 	)
 	parser.add_argument(
 		"--prompt",
-		default="Write a short poem about the sunrise.",
+		default="Write a story about the sunrise.",
 		help="Prompt that will be sent to the model",
 	)
 	parser.add_argument(
 		"--max-tokens",
 		type=int,
-		default=128,
+		default=1024,
 		help="Maximum number of tokens the model may generate per request",
 	)
 	parser.add_argument(

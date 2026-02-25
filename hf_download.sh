@@ -17,5 +17,5 @@ mkdir -p $path
 if [ -s .secret.sh ]; then
 	source .secret.sh
 fi
-HF_HUB_ENABLE_HF_TRANSFER=1 /opt/anaconda3/bin/hf download --local-dir ./$path --token HF_TOKEN "$1" --exclude "original/*" "metal/*"
+HF_HUB_ENABLE_HF_TRANSFER=1 /opt/anaconda3/bin/hf download --local-dir ./$path --token $HF_TOKEN "$1" --exclude "original/*" "metal/*"
 
