@@ -1,19 +1,12 @@
 import os, sys, re, glob, json
 
-# Change CUDA allocator to RMM
-import rmm
-from rmm.allocators.torch import rmm_torch_allocator
-import torch
-rmm.reinitialize(pool_allocator=True, managed_memory=True)
-torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
-
+import os, sys, torch, pypdf
 from dataclasses import dataclass, field
 from typing import Optional, List
 from transformers import TrainingArguments, AutoTokenizer, AutoModelForCausalLM, Mxfp4Config
 from peft import get_peft_model, LoraConfig, TaskType
 from trl import GRPOTrainer, GRPOConfig
 from datasets import Dataset
-import pypdf
 
 
 # ==========================================
@@ -27,7 +20,11 @@ Your task is to:
 
 <analysis>
 <relevant_quotes>
-<quote page="3">
+<quote page="2">
+<text>Exact text from the document</text>
+<explanation>Explain why the extracted text from the document applies to this patient.</explanation>
+</quote>
+<quote page="5">
 <text>Exact text from the document</text>
 <explanation>Explain why the extracted text from the document applies to this patient.</explanation>
 </quote>
@@ -118,15 +115,21 @@ def _get_text(completion):
 
 def xml_format_reward(prompts, completions, **kwargs):
 	rewards = []
-	xml_regex = '.*'.join(re.findall(r'<[^ >]*>', SYSTEM_PROMPT))
-	# r"<analysis>.*<reasoning>.*</reasoning>.*<relevant_quotes>.*</relevant_quotes>.*</analysis>.*<recommended_action>.*</recommended_action>"
+	xml_elems_lst = re.findall(r'<[^<>]*>', SYSTEM_PROMPT)
+	xml_elems_lst = [re.sub(r' [^>]*>', ' ', e) for e in xml_elems_lst]
+	xml_elems_unique_lst = []
+	temp_set = set()
+	for e in xml_elems_lst:
+		if e not in temp_set:
+			xml_elems_unique_lst.append(e)
+			temp_set.add(e)
+	xml_regex = '.*'.join(xml_elems_unique_lst)
 	for completion in completions:
 		text = _get_text(completion)
+		score = (sum([1 for i in xml_elems_unique_lst if i in text])/len(xml_elems_unique_lst))*0.5
 		# Simple regex check for structure (allowing newlines with DOTALL)
-		if re.search(xml_regex, text, re.DOTALL):
-			rewards.append(1.0)
-		else:
-			rewards.append(0.0)
+		score += 0.5 if re.match(xml_regex, text, re.DOTALL) else 0
+		rewards.append(score)
 	return rewards
 
 def content_reward(prompts, completions, ground_truth_action, **kwargs):
@@ -164,7 +167,7 @@ def citation_reward(prompts, completions, pdf_content, **kwargs):
 			if not quotes:
 				# If no quotes found but structure exists, neutral or small penalty? 
 				# Let's say 0.0 if structure requires quotes.
-				rewards.append(0.0) 
+				rewards.append(0.0)
 				continue
 			
 			valid_quotes = 0
@@ -273,4 +276,5 @@ def main():
 	tokenizer.save_pretrained(os.path.join(args.output_dir, "final_model"))
 
 if __name__ == "__main__":
+	xml_format_reward([SYSTEM_PROMPT], ["""<analysis><reasoning>Explain how the extracted text from the document are combined to form the final recommendation.</reasoning><relevant_quotes><quote page="2"><text>Exact text from the document</text><explanation>Explain why the extracted text from the document applies to this patient.</explanation></quote><quote page="5"><text>Exact text from the document</text><explanation>Explain why the extracted text from the document applies to this patient.</explanation></quote></relevant_quotes></analysis><recommended_action>Recommended action</recommended_action>"""])
 	main()

@@ -21,7 +21,7 @@ That way, we never lose partial generations due to client-side
 timeouts raising exceptions.
 """
 
-import argparse, asyncio, json, time, requests
+import argparse, asyncio, json, time, requests, random
 from typing import Any, Dict, List, Optional
 import aiohttp
 from tqdm.asyncio import tqdm_asyncio
@@ -178,6 +178,10 @@ def parse_ollama_usage(resp_json: Dict[str, Any]) -> int:
 	prompt = int(resp_json.get("prompt_eval_count", 0))
 	return max(total - prompt, 0)
 
+def randomize_payload(payload):
+	if '%d' in payload['prompt']:
+		payload["prompt"] = payload["prompt"] % random.randint(-50, 50)
+	return payload
 
 # --------------------------------------------------------------------------- #
 #  Async request helpers – one pair for each engine
@@ -185,7 +189,7 @@ def parse_ollama_usage(resp_json: Dict[str, Any]) -> int:
 async def _vllm_completion(
 	session: aiohttp.ClientSession, url: str, payload: Dict[str, Any]
 ) -> Dict[str, Any]:
-	async with session.post(url, json=payload) as resp:
+	async with session.post(url, json=randomize_payload(payload)) as resp:
 		if resp.status != 200:
 			txt = await resp.text()
 			raise RuntimeError(f"vLLM error {resp.status}: {txt}")
@@ -213,7 +217,7 @@ async def _vllm_completion_stream(
 	final event with a `usage` block, we use that. If not, we estimate
 	completion tokens from the accumulated text.
 	"""
-	async with session.post(url, json=payload) as resp:
+	async with session.post(url, json=randomize_payload(payload)) as resp:
 		if resp.status != 200:
 			txt = await resp.text()
 			raise RuntimeError(f"vLLM error {resp.status}: {txt}")
@@ -295,7 +299,7 @@ async def _vllm_completion_stream(
 async def _ollama_completion(
 	session: aiohttp.ClientSession, url: str, payload: Dict[str, Any]
 ) -> Dict[str, Any]:
-	async with session.post(url, json=payload) as resp:
+	async with session.post(url, json=randomize_payload(payload)) as resp:
 		if resp.status != 200:
 			txt = await resp.text()
 			raise RuntimeError(f"Ollama error {resp.status}: {txt}")
@@ -322,7 +326,7 @@ async def _ollama_completion_stream(
 	the client side), we estimate the completion token count from
 	that partial text.
 	"""
-	async with session.post(url, json=payload) as resp:
+	async with session.post(url, json=randomize_payload(payload)) as resp:
 		if resp.status != 200:
 			txt = await resp.text()
 			raise RuntimeError(f"Ollama error {resp.status}: {txt}")
@@ -592,13 +596,13 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"--prompt",
-		default="Write a story about the sunrise.",
+		default="Solve x^5 + 3x^4 - 10 = %d for both real and complex roots.",
 		help="Prompt that will be sent to the model",
 	)
 	parser.add_argument(
 		"--max-tokens",
 		type=int,
-		default=1024,
+		default=4096,
 		help="Maximum number of tokens the model may generate per request",
 	)
 	parser.add_argument(

@@ -1,0 +1,31 @@
+<script>
+  // 1. Standard TeXMe config
+  window.texme = { 
+	  renderOnLoad: false,
+	  style: 'none' // 'viewer' (fixed width narrow white bg), 'plain' (fixed width full white bg), 'none' (full width full white bg)
+  };
+
+  // 2. Standard MathJax config (recognizes standard LaTeX)
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
+      displayMath: [['$$', '$$'], ['\\[', '\\]']]
+    }
+  };
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/texme@1.2.2"></script>
+
+<textarea id="content" style="display:none;"></textarea>
+
+<script>
+  fetch('template.md')
+    .then(response => response.text())
+    .then(data => {
+      document.getElementById('content').value = data;
+      // 4. Trigger Render
+      texme.renderPage();
+    })
+    .catch(err => console.error('Fetch error:', err));
+</script>
+
