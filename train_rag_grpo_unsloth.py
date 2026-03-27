@@ -183,7 +183,7 @@ def main():
 	parser = argparse.ArgumentParser(description="GPRO RAG Training")
 	parser.add_argument("--model_name", type=str, default="/home/LLM_models/unsloth/gpt-oss-120b-unsloth-bnb-4bit", help="Model name or path")
 	parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
-	parser.add_argument("--max_seq_len", type=int, default=2048, help="Max sequence length")
+	parser.add_argument("--max_seq_len", type=int, default=2148, help="Max sequence length")
 	parser.add_argument("--batch_size", type=int, default=1, help="Batch size per device")
 	parser.add_argument("--epochs", type=int, default=1, help="Num epochs")
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Grad accumulation steps")
@@ -208,8 +208,7 @@ def main():
 	model = FastLanguageModel.get_peft_model(
 		model,
 		r = 16,
-		target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-						"gate_proj", "up_proj", "down_proj",],
+		target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",],
 		lora_alpha = 16,
 		lora_dropout = 0,
 		bias = "none",
@@ -233,7 +232,7 @@ def main():
 		num_train_epochs = args.epochs,
 		logging_steps = 1,
 		max_prompt_length = args.max_seq_len // 2, # Heuristic
-		max_completion_length = 2048, # Enough for XML output
+		max_completion_length = args.max_seq_len, # Enough for XML output
 		num_generations = 4, # Number of GPRO samples
 		report_to = "none",
 		save_strategy = "steps",
