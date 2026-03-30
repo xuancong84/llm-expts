@@ -2,6 +2,7 @@ import os, sys, gzip, traceback, re, html
 import numpy as np
 import pandas as pd
 from typing import Any
+from xml.sax.saxutils import escape, unescape
 
 def expand_path(fn):
 	return os.path.expanduser(os.path.expandvars(fn))
@@ -97,4 +98,11 @@ def match_quote(quote, gt_quotes, normalize=False):
 			max_score = score
 			max_idx = i
 	return max_score, max_idx
-		
+
+xml_esc = lambda t: escape(t, {"'": "&apos;", '"': "&quot;"})
+xml_unesc = lambda t: unescape(t, {"&apos;": "'", "&quot;": '"'})
+
+if __name__ == '__main__':
+	escaped_string = "&lt; &amp; &gt; &apos; &quot;"
+	print(xml_unesc(escaped_string))
+	print(xml_esc(xml_unesc(escaped_string)))

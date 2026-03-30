@@ -15,6 +15,7 @@ from tqdm import tqdm
 from lib.common import *
 from lib.sentence_similarity import *
 from lib.convert_pdf import *
+from lib.launch_vllm import launch_vllm_server
 
 # ==========================================
 # Data Loading
@@ -132,7 +133,6 @@ def load_rag_dataset(data_dir):
 # ==========================================
 # Reward Functions
 # ==========================================
-
 def _get_text(completion):
 	if isinstance(completion, str):
 		return completion.strip()
@@ -265,6 +265,7 @@ def main():
 	parser.add_argument("--epochs", '-e', type=int, default=1, help="Num epochs")
 	parser.add_argument("--learning-rate", '-lr', type=float, default=1e-5, help="Learning rate")
 	parser.add_argument("--log-steps", '-Gls', type=int, default=1, help="GRPO logging steps")
+	parser.add_argument("--vllm-gpu", '-vg', default='', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
 	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=8, help="GRPO Num samples")
 	parser.add_argument("--reward", '-r', default='all', choices=['xml', 'content', 'citation', 'all'], help="type of reward function")
 	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=8, help="Grad accumulation steps")
@@ -302,9 +303,6 @@ def main():
 		target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 	)
 	
-	model = get_peft_model(model, peft_config)
-	model.print_trainable_parameters()
-
 	# Load Dataset
 	dataset = load_rag_dataset(args.data_dir)
 	print(f"Loaded {len(dataset)} items from the entire dataset.")
@@ -320,6 +318,39 @@ def main():
 	else:
 		LOG.info(f"Maximum prompt length is {max_prompt_len}")
 
+	# Launch vLLM
+	vllm_opt = {}
+	if args.vllm_gpu:
+		# Save the de-quantized model for vLLM
+		deq_model_path = args.model_name.rstrip('/') + ".deq"
+		if not os.path.exists(deq_model_path):
+			LOG.info(f'Saving de-quantized model to {deq_model_path} ...')
+			model.save_pretrained(
+				deq_model_path,
+				safe_serialization=True,
+				max_shard_size="8GB",
+			)
+			tokenizer.save_pretrained(deq_model_path)
+
+		vllm_proc = launch_vllm_server(
+			model_name=deq_model_path,
+			host="127.0.0.1",
+			port=9000,
+			cuda_visible_devices=args.vllm_gpu,
+			max_model_len=args.max_seq_len,
+			tensor_parallel_size=1,
+			gpu_memory_utilization=0.9,
+		)
+		torch.cuda.set_device(0)
+		vllm_opt = {
+			"use_vllm": True,
+			"vllm_mode": "server",
+			# "vllm_model_impl": "transformers",
+			"vllm_server_host": "127.0.0.1",
+			"vllm_server_port": 9000,
+			"vllm_server_timeout": 600.0,
+		}
+
 	if False:
 		outputs = model.generate(tokenizer.apply_chat_template(
 				dataset[0]['prompt'],
@@ -331,6 +362,10 @@ def main():
 			streamer = TextStreamer(tokenizer)
 		)
 		print(tokenizer.decode(outputs[0], skip_special_tokens=False))
+
+	# Wrapping Lora adapters will modify the model inplace, so must be done after vLLM server is launched
+	model = get_peft_model(model, peft_config)
+	model.print_trainable_parameters()
 
 	# Trainer Config
 	training_args = GRPOConfig(
@@ -350,8 +385,7 @@ def main():
 		save_steps = 10,
 		bf16 = True, # Use BF16 for GH200
 		torch_compile=True,
-		# use_vllm=False,
-		# vllm_mode="colocate",
+		**vllm_opt,
 	)
 	
 	trainer = GRPOTrainer(

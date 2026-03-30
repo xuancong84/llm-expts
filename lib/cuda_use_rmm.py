@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# Usage: from lib.cuda_use_rmm import *
 
 # Change CUDA allocator to RMM
 import rmm
