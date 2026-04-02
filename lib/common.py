@@ -22,6 +22,13 @@ def Open(fn, mode='r', **kwargs):
 	fn = expand_path(fn)
 	return gzip.open(fn, mode, **kwargs) if fn.lower().endswith('.gz') else open(fn, mode, **kwargs)
 
+def save_txt(fn, text):
+	with open(fn, 'wt') as f:
+		f.write(text)
+
+def load_txt(fn):
+	with open(fn, 'rt') as f:
+		return f.read().strip()
 
 
 def prompt_token_length(example: dict[str, Any], tokenizer) -> int:
@@ -79,11 +86,16 @@ def get_text_from_ids(completion_ids_item, tokenizer):
 	raw = tokenizer.decode(completion_ids_item, skip_special_tokens=False)
 	return extract_gpt_oss_final(raw)
 
-# Match quote: return matching score and index
-def match_quote(quote, gt_quotes, normalize=False):
+# Normalize for matching
+norm_regex = re.compile(r'[^a-zA-Z0-9]')
+def norm_for_match(text):
+	return norm_regex.sub('', text)
+
+def match_quote_alnum(quote, gt_quotes, normalize=False):
+	# Match quote by alphanumeric characters: return matching score and index
 	if normalize:
-		quote = ''.join(quote.split())
-		gt_quotes = [''.join(gt_q.split()) for gt_q in gt_quotes]
+		quote = norm_for_match(quote)
+		gt_quotes = [norm_for_match(gt_q) for gt_q in gt_quotes]
 	if quote in gt_quotes:
 		return 1, gt_quotes.index(quote)
 	max_score = 0
@@ -95,6 +107,21 @@ def match_quote(quote, gt_quotes, normalize=False):
 		elif gt_quote in quote:
 			score = len(gt_quote)/len(quote)
 		if score > max_score:
+			max_score = score
+			max_idx = i
+	return max_score, max_idx
+
+def match_quote_bow(quote, gt_quotes, threshold=0.8):
+	# Match quote by bag-of-words
+	quote_bow = set(quote.split())
+	gt_quotes_bow = [set(gt_q.split()) for gt_q in gt_quotes]
+	if quote_bow in gt_quotes_bow:
+		return 1, gt_quotes_bow.index(quote_bow)
+	max_score = 0
+	max_idx = -1
+	for i, gt_quote_bow in enumerate(gt_quotes_bow):
+		score = len(quote_bow & gt_quote_bow) / len(quote_bow | gt_quote_bow)
+		if score > max_score and score > threshold:
 			max_score = score
 			max_idx = i
 	return max_score, max_idx

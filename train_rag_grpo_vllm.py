@@ -20,7 +20,7 @@ from lib.launch_vllm import launch_vllm_server
 # ==========================================
 # Data Loading
 # ==========================================
-SYSTEM_PROMPT = """You are a medical assistant. You will be provided with a patient case description and a clinical guideline document (converted from PDF).
+SYSTEM_PROMPT = """You are a medical assistant. You will be provided with a patient case description and a clinical guideline document (converted from PDF to markdown with some errors).
 Your task is to:
 1. Extract relevant quotes from the guideline that apply to the case.
 2. Formulate a recommended action based on the guideline and the case.
@@ -48,27 +48,6 @@ The specific action to take based on the extracted text from the document.
 """
 
 extract_text_from_pdf = convert_doc
-def process_text(text):
-	text = html.unescape(text)
-	text = text.replace('<!-- image -->\n', '')
-	lines = text.splitlines()
-	# Remove expert group section
-	title_set = set('Dr Ms Mr Adj A/Prof Assoc Prof'.split())
-	idx = next((i for i, line in enumerate(lines) if line.lower().startswith('## expert group')), -1)
-	if idx >= 0:
-		lines.pop(idx)
-		while idx < len(lines):
-			if not lines[idx].strip():
-				pass
-			elif lines[idx].strip().startswith('##'):
-				pass
-			elif lines[idx].split()[0] in title_set:
-				pass
-			else:
-				break
-			lines.pop(idx)
-	return '\n'.join(lines)
-
 def load_rag_dataset(data_dir):
 	json_files = glob.glob(os.path.join(data_dir, "*_filtered.json"))
 	data = []
@@ -89,17 +68,14 @@ def load_rag_dataset(data_dir):
 		# Load PDF content from cache (if exists) or run converter
 		pdf_cache_fn = os.path.join(md_cache_dir, os.path.basename(pdf_file)[:-4]+'.md')
 		if os.path.exists(pdf_cache_fn) and os.path.getsize(pdf_cache_fn) > 0:
-			with open(pdf_cache_fn, 'r') as f:
-				pdf_content = f.read().strip()
+			pdf_content = load_txt(pdf_cache_fn)
 		else:
-			pdf_content = extract_text_from_pdf(pdf_file)
-			with open(pdf_cache_fn, 'w') as f:
-				f.write(pdf_content)
+			pdf_content, pdf_content_raw = extract_text_from_pdf(pdf_file)
+			save_txt(pdf_cache_fn, pdf_content)
+			save_txt(pdf_cache_fn[:-3]+'_raw.md', pdf_content_raw)
 		if not pdf_content:
 			LOG.warning(f"Empty PDF content for {base_name}, skipped!")
 			continue
-
-		pdf_content = process_text(pdf_content)
 
 		# Load JSON
 		with open(json_file, 'r') as f:
@@ -120,14 +96,25 @@ def load_rag_dataset(data_dir):
 			# We store ground truth for reward calculation
 			gt_action = case.get('recommended_action', '')
 			gt_quotes = case.get('reference', [])
-			
+
+			# Sanity check for whether the ground truth quote occurs in the pdf_content
+			valid_gt_quotes = []
+			for gt_quote in gt_quotes:
+				pdf_content_norm = norm_for_match(pdf_content)
+				if norm_for_match(gt_quote['quote']) in pdf_content_norm:
+					valid_gt_quotes.append(gt_quote)
+					continue
+				for L in gt_quote['quote'].splitlines():
+					valid_gt_quotes.append({'quote': L, 'why_relevant': gt_quote['why_relevant']})
+					# if norm_for_match(L) not in pdf_content_norm:
+					# 	LOG.warning(f"Ground truth quote line '{L}' not found in pdf_content for {base_name}!")
+						
 			data.append({
 				"prompt": conversation, 
 				"ground_truth_action": gt_action,
-				"ground_truth_quotes": gt_quotes,
+				"ground_truth_quotes": valid_gt_quotes,
 				"pdf_content": pdf_content # valid for citation checking
 			})
-			
 	return Dataset.from_list(data)
 
 # ==========================================
@@ -149,7 +136,8 @@ def _get_text(completion):
 
 def reward_xml_format(prompts, completions, **kwargs):
 	global tokenizer
-	completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
+	if not kwargs.get('completion_extracted', False):
+		completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
 	rewards = []
 	xml_elems_lst = re.findall(r'<[^<>]*>', SYSTEM_PROMPT)
 	xml_elems_lst = [re.sub(r' [^>]*>', ' ', e) for e in xml_elems_lst]
@@ -172,7 +160,8 @@ def reward_content(prompts, completions, ground_truth_action, **kwargs):
 	# Reward for matching the ground truth action similarity
 	# Simple overlap for now, ideally use embedding or ROUGE
 	global tokenizer
-	completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
+	if not kwargs.get('completion_extracted', False):
+		completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
 	rewards = []
 	for completion, gt_action in zip(completions, ground_truth_action):
 		try:
@@ -198,7 +187,8 @@ def reward_content(prompts, completions, ground_truth_action, **kwargs):
 
 def reward_citation(prompts, completions, pdf_content, ground_truth_quotes, **kwargs):
 	global tokenizer
-	completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
+	if not kwargs.get('completion_extracted', False):
+		completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
 	rewards = []
 	for completion, context, gt_quotes1 in zip(completions, pdf_content, ground_truth_quotes):
 		try:
@@ -210,7 +200,7 @@ def reward_citation(prompts, completions, pdf_content, ground_truth_quotes, **kw
 
 			gt_quote_explain = [(q['quote'], q['why_relevant']) for q in gt_quotes1]
 
-			reward = 0
+			matches = []
 			for block in quote_blocks:
 				quote = explain = ''
 				m = re.search(r"<text>(.*?)</text>", block, re.DOTALL)
@@ -220,35 +210,37 @@ def reward_citation(prompts, completions, pdf_content, ground_truth_quotes, **kw
 				if m:
 					explain = xml_unesc(" ".join(m.group(1).split()))
 				if not quote or not gt_quote_explain:
-					reward -= 0.1
 					continue
 
-				score, idx = match_quote(quote, [q1 for q1, e1 in gt_quote_explain], normalize=True)
+				# score, idx = match_quote_alnum(quote, [q1 for q1, e1 in gt_quote_explain], normalize=True)
+				score, idx = match_quote_bow(quote, [q1 for q1, e1 in gt_quote_explain])
 				if idx >= 0:
-					reward += (score + sentence_similarity_crossEncoder(explain, gt_quote_explain[idx][1]))/2
+					matches.append((score + sentence_similarity_crossEncoder(explain, gt_quote_explain[idx][1]))/2)
 					gt_quote_explain.pop(idx)
-				else:
-					reward -= 0.1
-					
-			rewards.append(reward / len(gt_quotes1))
-		except Exception:
+
+			prec = len(matches) / max(1, len(quote_blocks))
+			w_prec = sum(matches) / max(1, len(quote_blocks))
+			recall = len(matches) / max(1, len(gt_quotes1))
+			w_recall = sum(matches) / max(1, len(gt_quotes1))
+			f1 = 2 * prec * recall / max(1e-8, prec + recall)
+			w_f1 = 2 * w_prec * w_recall / max(1e-8, w_prec + w_recall)
+			rewards.append((f1 + w_f1)/2)
+		except Exception as e:
+			LOG.error(f"Error in reward_citation: {e}")
 			rewards.append(-1.0)
 	return rewards
 
 def reward_func(prompts, pdf_content, ground_truth_action, ground_truth_quotes, **kwargs):
 	global tokenizer, args
 	completions = get_text_from_ids(kwargs['completion_ids'], tokenizer)
-	r1 = reward_xml_format(prompts, completions)
-	r2 = reward_content(prompts, completions, ground_truth_action)
-	r3 = reward_citation(prompts, completions, pdf_content, ground_truth_quotes)
-	if args.reward == 'xml':
-		return r1
-	elif args.reward == 'content':
-		return r2
-	elif args.reward == 'citation':
-		return r3
-	else:
-		return [(r1[i]+r2[i]+r3[i])/3 for i in range(len(r1))]
+	R = {'xml': reward_xml_format(prompts, completions, completion_extracted=True),
+		'content': reward_content(prompts, completions, ground_truth_action, completion_extracted=True),
+		'citation': reward_citation(prompts, completions, pdf_content, ground_truth_quotes, completion_extracted=True)}
+	if args.reward == 'all':
+		return [(R['xml'][i]+R['content'][i]+R['citation'][i])/3 for i in range(len(R['xml']))]
+	rs = [R[arg] for arg in args.reward.split(':')]
+	N_rs = len(rs)
+	return [sum([rs[j][i] for j in range(N_rs)])/N_rs for i in range(len(completions))]
 
 # ==========================================
 # Training
@@ -259,21 +251,24 @@ def main():
 	parser = argparse.ArgumentParser(description="GPRO RAG Training")
 	parser.add_argument("--model-name", '-m', type=str, default="/home/LLM_models/gpt-oss-20b", help="Model name or path")
 	parser.add_argument("--output-dir", '-o', type=str, default="outputs", help="Output directory")
-	parser.add_argument("--max-seq-len", '-l', type=int, default=20000, help="Max sequence length")
+	parser.add_argument("--max-seq-len", '-l', type=int, default=25000, help="Max sequence length")
 	parser.add_argument("--batch-size", '-b', type=int, default=1, help="Batch size per device")
 	parser.add_argument("--data-dir", '-d', type=str, default="data", help="dataset directory")
 	parser.add_argument("--epochs", '-e', type=int, default=1, help="Num epochs")
+	parser.add_argument("--lora-r", '-Lr', type=int, default=32, help="LoRA r")
+	parser.add_argument("--lora-alpha", '-La', type=int, default=64, help="LoRA alpha")
+	parser.add_argument("--lora-dropout", '-Ld', type=float, default=0.1, help="LoRA dropout")
 	parser.add_argument("--learning-rate", '-lr', type=float, default=1e-5, help="Learning rate")
 	parser.add_argument("--log-steps", '-Gls', type=int, default=1, help="GRPO logging steps")
 	parser.add_argument("--vllm-gpu", '-vg', default='', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
 	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=8, help="GRPO Num samples")
-	parser.add_argument("--reward", '-r', default='all', choices=['xml', 'content', 'citation', 'all'], help="type of reward function")
+	parser.add_argument("--reward", '-r', default='all', help="type of reward function: xml/content/citation/all separated by a semicolon.")
 	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=8, help="Grad accumulation steps")
 	parser.add_argument("--verbose", "-v", choices=['debug', 'info', 'warning', 'error', 'critical'], default='info', help="Logging level")
 	args = parser.parse_args()
 
 	LOG.basicConfig(level=Try(lambda: int(args.verbose), eval('LOG.'+args.verbose.upper())),
-					format='%(levelname)s %(asctime)s: %(message)s')
+					format='%(levelname)s %(asctime)s: %(message)s', force=True)
 
 	# Check GPU
 	gpu_count = torch.cuda.device_count()
@@ -284,24 +279,8 @@ def main():
 	import transformers.modeling_utils
 	transformers.modeling_utils.caching_allocator_warmup = lambda *args, **kwargs: None
 
-	# Load Model
+	# Load tokenizer
 	tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
-	model = AutoModelForCausalLM.from_pretrained(
-		args.model_name,
-		device_map="cuda",
-		dtype="auto",
-		quantization_config = Mxfp4Config(dequantize=True),
-		trust_remote_code=True,
-	)
-
-	peft_config = LoraConfig(
-		task_type=TaskType.CAUSAL_LM,
-		inference_mode=False,
-		r=8,
-		lora_alpha=32,
-		lora_dropout=0.1,
-		target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-	)
 	
 	# Load Dataset
 	dataset = load_rag_dataset(args.data_dir)
@@ -318,6 +297,15 @@ def main():
 	else:
 		LOG.info(f"Maximum prompt length is {max_prompt_len}")
 
+	# Load Model
+	model = AutoModelForCausalLM.from_pretrained(
+		args.model_name,
+		device_map="cuda",
+		dtype="auto",
+		quantization_config = Mxfp4Config(dequantize=True),
+		trust_remote_code=True,
+	)
+
 	# Launch vLLM
 	vllm_opt = {}
 	if args.vllm_gpu:
@@ -332,10 +320,16 @@ def main():
 			)
 			tokenizer.save_pretrained(deq_model_path)
 
+		# Find a free port
+		import socket
+		s = socket.socket()
+		s.bind(('',0))
+		free_port = s.getsockname()[1]
+		s.close()
 		vllm_proc = launch_vllm_server(
 			model_name=deq_model_path,
 			host="127.0.0.1",
-			port=9000,
+			port=free_port,
 			cuda_visible_devices=args.vllm_gpu,
 			max_model_len=args.max_seq_len,
 			tensor_parallel_size=1,
@@ -347,7 +341,7 @@ def main():
 			"vllm_mode": "server",
 			# "vllm_model_impl": "transformers",
 			"vllm_server_host": "127.0.0.1",
-			"vllm_server_port": 9000,
+			"vllm_server_port": free_port,
 			"vllm_server_timeout": 600.0,
 		}
 
@@ -364,6 +358,14 @@ def main():
 		print(tokenizer.decode(outputs[0], skip_special_tokens=False))
 
 	# Wrapping Lora adapters will modify the model inplace, so must be done after vLLM server is launched
+	peft_config = LoraConfig(
+		task_type=TaskType.CAUSAL_LM,
+		inference_mode=False,
+		r=args.lora_r,
+		lora_alpha=args.lora_alpha,
+		lora_dropout=args.lora_dropout,
+		target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+	)
 	model = get_peft_model(model, peft_config)
 	model.print_trainable_parameters()
 
@@ -391,8 +393,8 @@ def main():
 	trainer = GRPOTrainer(
 		model = model,
 		processing_class = tokenizer,
-		# reward_funcs = reward_func,
-		reward_funcs = [reward_xml_format, reward_content, reward_citation],
+		reward_funcs = reward_func,
+		# reward_funcs = [reward_xml_format, reward_content, reward_citation],
 		args = training_args,
 		train_dataset = dataset,
 	)
