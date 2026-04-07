@@ -106,8 +106,8 @@ def load_rag_dataset(data_dir):
 					continue
 				for L in gt_quote['quote'].splitlines():
 					valid_gt_quotes.append({'quote': L, 'why_relevant': gt_quote['why_relevant']})
-					# if norm_for_match(L) not in pdf_content_norm:
-					# 	LOG.warning(f"Ground truth quote line '{L}' not found in pdf_content for {base_name}!")
+					if norm_for_match(L) not in pdf_content_norm:
+						LOG.debug(f"Ground truth quote line '{L}' not found in pdf_content for {base_name}!")
 						
 			data.append({
 				"prompt": conversation, 
@@ -215,7 +215,8 @@ def reward_citation(prompts, completions, pdf_content, ground_truth_quotes, **kw
 				# score, idx = match_quote_alnum(quote, [q1 for q1, e1 in gt_quote_explain], normalize=True)
 				score, idx = match_quote_bow(quote, [q1 for q1, e1 in gt_quote_explain])
 				if idx >= 0:
-					matches.append((score + sentence_similarity_crossEncoder(explain, gt_quote_explain[idx][1]))/2)
+					matches.append(score)
+					# matches.append((score + sentence_similarity_crossEncoder(explain, gt_quote_explain[idx][1]))/2)
 					gt_quote_explain.pop(idx)
 
 			prec = len(matches) / max(1, len(quote_blocks))
@@ -254,15 +255,15 @@ def main():
 	parser.add_argument("--max-seq-len", '-l', type=int, default=25000, help="Max sequence length")
 	parser.add_argument("--batch-size", '-b', type=int, default=1, help="Batch size per device")
 	parser.add_argument("--data-dir", '-d', type=str, default="data", help="dataset directory")
-	parser.add_argument("--epochs", '-e', type=int, default=1, help="Num epochs")
-	parser.add_argument("--lora-r", '-Lr', type=int, default=32, help="LoRA r")
-	parser.add_argument("--lora-alpha", '-La', type=int, default=64, help="LoRA alpha")
+	parser.add_argument("--epochs", '-e', type=int, default=10, help="Num epochs")
+	parser.add_argument("--lora-r", '-Lr', type=int, default=16, help="LoRA r")
+	parser.add_argument("--lora-alpha", '-La', type=int, default=24, help="LoRA alpha")
 	parser.add_argument("--lora-dropout", '-Ld', type=float, default=0.1, help="LoRA dropout")
 	parser.add_argument("--learning-rate", '-lr', type=float, default=1e-5, help="Learning rate")
 	parser.add_argument("--log-steps", '-Gls', type=int, default=1, help="GRPO logging steps")
-	parser.add_argument("--vllm-gpu", '-vg', default='', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
+	parser.add_argument("--vllm-gpu", '-vg', default='1', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
 	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=8, help="GRPO Num samples")
-	parser.add_argument("--reward", '-r', default='all', help="type of reward function: xml/content/citation/all separated by a semicolon.")
+	parser.add_argument("--reward", '-r', default='citation', help="type of reward function: xml/content/citation/all separated by a semicolon.")
 	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=8, help="Grad accumulation steps")
 	parser.add_argument("--verbose", "-v", choices=['debug', 'info', 'warning', 'error', 'critical'], default='info', help="Logging level")
 	args = parser.parse_args()

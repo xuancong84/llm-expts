@@ -111,7 +111,7 @@ def match_quote_alnum(quote, gt_quotes, normalize=False):
 			max_idx = i
 	return max_score, max_idx
 
-def match_quote_bow(quote, gt_quotes, threshold=0.8):
+def match_quote_bow(quote, gt_quotes, threshold=0.75):
 	# Match quote by bag-of-words
 	quote_bow = set(quote.split())
 	gt_quotes_bow = [set(gt_q.split()) for gt_q in gt_quotes]

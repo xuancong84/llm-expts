@@ -66,7 +66,7 @@ def join_wrapped_lines(text: str) -> str:
 	return "\n".join(out)
 
 doc_converter = markdown_options = None
-def convert_doc(pdf_path, exclude_ack_re=re.compile(r'Agency for Care Effectiveness')):
+def convert_doc(pdf_path, exclude_ack_re=None):
 	global doc_converter, markdown_options
 	if doc_converter is None:
 		from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -99,6 +99,24 @@ def convert_doc(pdf_path, exclude_ack_re=re.compile(r'Agency for Care Effectiven
 	text = join_wrapped_lines(text_raw)
 	text = html.unescape(text)
 	text = text.replace('<!-- image -->\n', '')
+	
+	# Remove expert group section
+	lines = text.splitlines()
+	title_set = set('Dr Ms Mr Adj A/Prof Assoc Prof'.split())
+	idx = next((i for i, line in enumerate(lines) if line.lower().startswith('## expert group')), -1)
+	if idx >= 0:
+		lines.pop(idx)
+		while idx < len(lines):
+			if not lines[idx].strip():
+				pass
+			elif lines[idx].strip().startswith('##'):
+				pass
+			elif lines[idx].split()[0] in title_set:
+				pass
+			else:
+				break
+			lines.pop(idx)
+	text = '\n'.join(lines)
 	return text, text_raw
 
 pdf_reader = None
