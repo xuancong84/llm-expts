@@ -113,7 +113,8 @@ def load_rag_dataset(data_dir):
 				"prompt": conversation, 
 				"ground_truth_action": gt_action,
 				"ground_truth_quotes": valid_gt_quotes,
-				"pdf_content": pdf_content # valid for citation checking
+				"pdf_content": pdf_content, # valid for citation checking
+				"file_id": base_name
 			})
 	return Dataset.from_list(data)
 
@@ -263,9 +264,13 @@ def main():
 	parser.add_argument("--log-steps", '-Gls', type=int, default=1, help="GRPO logging steps")
 	parser.add_argument("--vllm-gpu", '-vg', default='1', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
 	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=8, help="GRPO Num samples")
-	parser.add_argument("--reward", '-r', default='citation', help="type of reward function: xml/content/citation/all separated by a semicolon.")
+	parser.add_argument("--reward", '-r', default='citation', help="type of reward function: xml/content/citation/all separated by a colon.")
 	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=8, help="Grad accumulation steps")
 	parser.add_argument("--verbose", "-v", choices=['debug', 'info', 'warning', 'error', 'critical'], default='info', help="Logging level")
+	parser.add_argument("--test-ratio", '-tr', type=float, default=0.1, help="Ratio of the dataset to use for testing (0 to 1)")
+	parser.add_argument("--save-best-model", '-best', action='store_true', help="Save best model")
+	parser.add_argument("--eval-save-every", '-eses', default=10, type=int, help="save every N steps")
+	parser.add_argument("--seed", '-s', type=int, default=1234, help="Random seed")
 	args = parser.parse_args()
 
 	LOG.basicConfig(level=Try(lambda: int(args.verbose), eval('LOG.'+args.verbose.upper())),
@@ -290,13 +295,33 @@ def main():
 		LOG.error("No data found! Exiting.")
 		return
 
-	# Determine maximum prompt length from dataset
+	# Determine maximum prompt length from dataset (use full dataset to be safe)
 	max_dct = get_max_prompt_length(dataset, tokenizer)
 	max_prompt_len = max_dct['max_prompt_length']
 	if max_prompt_len >= args.max_seq_len:
 		LOG.error(f"max_prompt_len (max_prompt_len) is more than max_seq_len (args.max_seq_len) !!!")
 	else:
 		LOG.info(f"Maximum prompt length is {max_prompt_len}")
+
+	# Split into train/test sets
+	if args.test_ratio > 0:
+		import random
+		file_ids = sorted(list(set(dataset['file_id'])))
+		random.seed(args.seed)
+		random.shuffle(file_ids)
+		num_test = int(len(file_ids) * args.test_ratio)
+		if num_test == 0 and args.test_ratio > 0 and len(file_ids) > 0:
+			num_test = 1 # Ensuring at least one file is selected if test_ratio > 0
+		test_file_ids = set(file_ids[:num_test])
+
+		train_dataset = dataset.filter(lambda x: x['file_id'] not in test_file_ids)
+		test_dataset = dataset.filter(lambda x: x['file_id'] in test_file_ids)
+		print(f"Split dataset by files: {len(train_dataset)} train, {len(test_dataset)} test (test_ratio={args.test_ratio})")
+		print(f"Train files: {len(file_ids) - num_test}, Test files: {num_test}")
+	else:
+		train_dataset = dataset
+		test_dataset = None
+		print(f"Using all {len(dataset)} items for training (no test split).")
 
 	# Load Model
 	model = AutoModelForCausalLM.from_pretrained(
@@ -310,6 +335,7 @@ def main():
 	# Launch vLLM
 	vllm_opt = {}
 	if args.vllm_gpu:
+		gpu_num, gpu_mem_use = (args.vllm_gpu.split(':')+['0.9'])[:2]
 		# Save the de-quantized model for vLLM
 		deq_model_path = args.model_name.rstrip('/') + ".deq"
 		if not os.path.exists(deq_model_path):
@@ -321,20 +347,13 @@ def main():
 			)
 			tokenizer.save_pretrained(deq_model_path)
 
-		# Find a free port
-		import socket
-		s = socket.socket()
-		s.bind(('',0))
-		free_port = s.getsockname()[1]
-		s.close()
-		vllm_proc = launch_vllm_server(
+		os.vllm_proc = launch_vllm_server(
 			model_name=deq_model_path,
 			host="127.0.0.1",
-			port=free_port,
-			cuda_visible_devices=args.vllm_gpu,
+			cuda_visible_devices=gpu_num,
 			max_model_len=args.max_seq_len,
 			tensor_parallel_size=1,
-			gpu_memory_utilization=0.9,
+			gpu_memory_utilization=float(gpu_mem_use),
 		)
 		torch.cuda.set_device(0)
 		vllm_opt = {
@@ -342,7 +361,7 @@ def main():
 			"vllm_mode": "server",
 			# "vllm_model_impl": "transformers",
 			"vllm_server_host": "127.0.0.1",
-			"vllm_server_port": free_port,
+			"vllm_server_port": os.vllm_proc.port_num,
 			"vllm_server_timeout": 600.0,
 		}
 
@@ -385,19 +404,28 @@ def main():
 		num_generations = args.grpo_num_samples, # Number of GPRO samples
 		report_to = "none",
 		save_strategy = "steps",
-		save_steps = 10,
+		save_steps = args.eval_save_every,
+		eval_strategy = "steps" if test_dataset is not None else "no",
+		eval_steps = args.eval_save_every,
+		eval_on_start = True,
 		bf16 = True, # Use BF16 for GH200
-		torch_compile=True,
+		torch_compile = True,
+		# Load best model at the end
+		load_best_model_at_end = args.save_best_model,
+		# metric_for_best_model = "eval_reward",
+		# greater_is_better = True,
+		# vllm options
 		**vllm_opt,
 	)
 	
-	trainer = GRPOTrainer(
+	trainer = RewardOnlyEvalGRPOTrainer(
 		model = model,
 		processing_class = tokenizer,
 		reward_funcs = reward_func,
 		# reward_funcs = [reward_xml_format, reward_content, reward_citation],
 		args = training_args,
-		train_dataset = dataset,
+		train_dataset = train_dataset,
+		eval_dataset = test_dataset,
 	)
 	
 	print("Starting Training...")
@@ -412,6 +440,4 @@ def main():
 if __name__ == "__main__":
 	if False:
 		reward_xml_format([SYSTEM_PROMPT], [SYSTEM_PROMPT[SYSTEM_PROMPT.find('<analysis>'):]])
-	if True:
-		pass
 	main()

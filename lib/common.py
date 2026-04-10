@@ -129,6 +129,115 @@ def match_quote_bow(quote, gt_quotes, threshold=0.75):
 xml_esc = lambda t: escape(t, {"'": "&apos;", '"': "&quot;"})
 xml_unesc = lambda t: unescape(t, {"&apos;": "'", "&quot;": '"'})
 
+import torch
+from accelerate.utils import gather_object
+from trl import GRPOTrainer
+from trl.trainer.utils import nanstd
+
+class RewardOnlyEvalGRPOTrainer(GRPOTrainer):
+	@torch.no_grad()
+	def _eval_reward_only(self, inputs):
+		device = self.accelerator.device
+		mode = "eval"
+
+		prompts = [x["prompt"] for x in inputs]
+
+		(
+			prompt_ids_list,
+			completion_ids_list,
+			tool_mask_list,
+			completions,
+			_num_items_in_batch,
+			sampling_per_token_logps_list,
+			extra_fields,
+		) = self._generate(prompts)
+
+		prompts_text = self.processing_class.batch_decode(
+			prompt_ids_list, skip_special_tokens=True
+		)
+		completions_text = self.processing_class.batch_decode(
+			completion_ids_list, skip_special_tokens=True
+		)
+
+		if extra_fields:
+			for i, inp in enumerate(inputs):
+				for key, values in extra_fields.items():
+					if isinstance(values, list) and i < len(values):
+						inp[key] = values[i]
+					elif not isinstance(values, list):
+						inp[key] = values
+
+		rewards_per_func = self._calculate_rewards(
+			inputs, prompts, completions, completion_ids_list
+		)
+
+		rewards = (
+			rewards_per_func
+			* self.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+		).nansum(dim=1)
+
+		mean_reward = rewards.mean()
+		std_reward = rewards.std() if rewards.numel() > 1 else torch.zeros((), device=device)
+
+		for i, reward_func_name in enumerate(self.reward_func_names):
+			mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
+			std_func_rewards = nanstd(rewards_per_func[:, i]).item()
+			self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
+			self._metrics[mode][f"rewards/{reward_func_name}/std"].append(std_func_rewards)
+
+		self._metrics[mode]["reward"].append(mean_reward.item())
+		self._metrics[mode]["reward_std"].append(std_reward.item())
+
+		self._logs["prompt"].extend(gather_object(prompts_text))
+		self._logs["completion"].extend(gather_object(completions_text))
+		for i, name in enumerate(self.reward_func_names):
+			self._logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
+
+		self._logs["advantages"].extend([0.0] * rewards_per_func.shape[0])
+
+		for column in sorted(self._pending_extra_logs):
+			self._logs["extra"][column].extend(gather_object(self._pending_extra_logs[column]))
+		self._pending_extra_logs.clear()
+
+		for name in sorted(self._pending_metrics):
+			values = self._pending_metrics[name]
+			local_mean = sum(values) / len(values)
+			global_mean = self.accelerator.gather(
+				torch.tensor(local_mean, device=device)
+			).mean().item()
+			self._metrics[mode][name].append(global_mean)
+		self._pending_metrics.clear()
+
+		return mean_reward
+
+	def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+		if model.training:
+			return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+
+		with torch.no_grad():
+			mean_reward = self._eval_reward_only(inputs)
+
+		dummy_loss = torch.zeros((), device=mean_reward.device)
+		return dummy_loss, None, None
+
+	def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+		metrics = super().evaluate(
+			eval_dataset=eval_dataset,
+			ignore_keys=ignore_keys,
+			metric_key_prefix=metric_key_prefix,
+		)
+
+		eval_store = self._metrics.get("eval", {})
+
+		if "reward" in eval_store and eval_store["reward"]:
+			metrics[f"{metric_key_prefix}_reward"] = float(sum(eval_store["reward"]) / len(eval_store["reward"]))
+
+		if "reward_std" in eval_store and eval_store["reward_std"]:
+			metrics[f"{metric_key_prefix}_reward_std"] = float(sum(eval_store["reward_std"]) / len(eval_store["reward_std"]))
+
+		return metrics
+
+
 if __name__ == '__main__':
 	escaped_string = "&lt; &amp; &gt; &apos; &quot;"
 	print(xml_unesc(escaped_string))
