@@ -10,6 +10,7 @@ Useful options:
 	enable sleep API (/sleep) to free up GPU memory: --enable-sleep-mode 
 	select docker image: set env variable e.g., VLLM_IMAGE=vllm/vllm-openai:nightly-aarch64 ...
 	options to avoid crash: -cc.cudagraph_mode=NONE -cc.mode=0 --enforce-eager
+  double KV-cache size (reduce precision): --kv-cache-dtype fp8_e4m3 --calculate-kv-scales
 "
 	exit
 fi
@@ -37,5 +38,4 @@ docker run --rm -it \
   --model /$model_base \
   --dtype bfloat16 \
   --tensor-parallel-size 1 \
-  --kv-cache-dtype fp8_e4m3 \
   --trust-remote-code "${@:3}"

@@ -160,7 +160,7 @@ def main() -> None:
 	dicts = backward_extract_dicts(lines, max_noneligible=10)
 	df = build_table(dicts)
 
-	print(df.to_string(index=False, na_rep="NAN"))
+	print(df.to_string(index=False, na_rep="NAN"), flush=True)
 	plot_tracks(df)
 
 

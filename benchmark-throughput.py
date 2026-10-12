@@ -136,6 +136,8 @@ def ollama_payload(
 		"num_predict": max_tokens,
 		"temperature": 0.0,
 		"top_p": 1.0,
+		"num_gpu": 999,  # offload all layers to GPU, prevent CPU offload
+		"num_thread": 8,  # all layers are on GPU; avoid ~144 spinning CPU threads
 	}
 	if max_time is not None:
 		options["max_predict_time"] = max_time + 10

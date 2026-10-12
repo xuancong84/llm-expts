@@ -257,19 +257,19 @@ def main():
 	parser.add_argument("--batch-size", '-b', type=int, default=1, help="Batch size per device")
 	parser.add_argument("--data-dir", '-d', type=str, default="data", help="dataset directory")
 	parser.add_argument("--epochs", '-e', type=int, default=10, help="Num epochs")
-	parser.add_argument("--lora-r", '-Lr', type=int, default=16, help="LoRA r")
-	parser.add_argument("--lora-alpha", '-La', type=int, default=24, help="LoRA alpha")
+	parser.add_argument("--lora-r", '-Lr', type=int, default=8, help="LoRA r")
+	parser.add_argument("--lora-alpha", '-La', type=int, default=8, help="LoRA alpha")
 	parser.add_argument("--lora-dropout", '-Ld', type=float, default=0.1, help="LoRA dropout")
 	parser.add_argument("--learning-rate", '-lr', type=float, default=1e-5, help="Learning rate")
 	parser.add_argument("--log-steps", '-Gls', type=int, default=1, help="GRPO logging steps")
 	parser.add_argument("--vllm-gpu", '-vg', default='1', help="GPU ID for the vLLM server, set to empty to not use vLLM server")
-	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=8, help="GRPO Num samples")
+	parser.add_argument("--grpo-num-samples", '-Gns', type=int, default=4, help="GRPO Num samples")
 	parser.add_argument("--reward", '-r', default='citation', help="type of reward function: xml/content/citation/all separated by a colon.")
-	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=8, help="Grad accumulation steps")
+	parser.add_argument("--gradient-accumulation-steps", '-grad-acc-steps', type=int, default=16, help="Grad accumulation steps")
 	parser.add_argument("--verbose", "-v", choices=['debug', 'info', 'warning', 'error', 'critical'], default='info', help="Logging level")
 	parser.add_argument("--test-ratio", '-tr', type=float, default=0.1, help="Ratio of the dataset to use for testing (0 to 1)")
 	parser.add_argument("--save-best-model", '-best', action='store_true', help="Save best model")
-	parser.add_argument("--eval-save-every", '-eses', default=10, type=int, help="save every N steps")
+	parser.add_argument("--eval-save-every", '-eses', default=4, type=int, help="save every N steps")
 	parser.add_argument("--seed", '-s', type=int, default=1234, help="Random seed")
 	args = parser.parse_args()
 
@@ -400,7 +400,7 @@ def main():
 		logging_steps = args.log_steps,
 		# max_prompt_length = None,	# option removed in new version TRL
 		max_completion_length = int(args.max_seq_len-max_prompt_len),
-		generation_batch_size = args.grpo_num_samples,
+		generation_batch_size = args.gradient_accumulation_steps,
 		num_generations = args.grpo_num_samples, # Number of GPRO samples
 		report_to = "none",
 		save_strategy = "steps",
